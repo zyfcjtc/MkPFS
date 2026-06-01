@@ -67,6 +67,8 @@ class CliTestCase(unittest.TestCase):
             case_insensitive=True,
             cpu_count=0,
             compression_level=7,
+            min_compress_size=0,
+            max_compressed_ratio=None,
             signed=False,
             encrypted=False,
             ekpfs_key=None,
@@ -93,6 +95,8 @@ class CliTestCase(unittest.TestCase):
             case_insensitive=True,
             cpu_count=0,
             compression_level=7,
+            min_compress_size=0,
+            max_compressed_ratio=None,
             signed=False,
             encrypted=False,
             ekpfs_key=None,
@@ -176,6 +180,42 @@ class TestCliArgumentHelpers(CliTestCase):
             action for action in folder_parser._actions if getattr(action, "dest", "") == "compression_level"
         )
         self.assertEqual(compression_action.default, 7)
+
+    def test_pack_parser_exposes_executable_compression_skip_flag(self) -> None:
+        """The pack parser should expose an opt-in executable compression skip."""
+        parser: argparse.ArgumentParser = cli.cli_mkpfs_main_parsers()
+        pack_parser: argparse.ArgumentParser = next(
+            action.choices["pack"] for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+        )
+        pack_choices: dict[str, argparse.ArgumentParser] = next(
+            action.choices for action in pack_parser._actions if isinstance(action, argparse._SubParsersAction)
+        )
+        folder_parser: argparse.ArgumentParser = pack_choices["folder"]
+        skip_action: argparse.Action = next(
+            action for action in folder_parser._actions if getattr(action, "dest", "") == "skip_executable_compression"
+        )
+        self.assertFalse(skip_action.default)
+        self.assertIsNotNone(skip_action.help)
+        self.assertIn("eboot*.bin", skip_action.help or "")
+
+    def test_pack_parser_exposes_whole_file_compression_threshold(self) -> None:
+        """The pack parser should expose the whole-file compression threshold."""
+        parser: argparse.ArgumentParser = cli.cli_mkpfs_main_parsers()
+        pack_parser: argparse.ArgumentParser = next(
+            action.choices["pack"] for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+        )
+        pack_choices: dict[str, argparse.ArgumentParser] = next(
+            action.choices for action in pack_parser._actions if isinstance(action, argparse._SubParsersAction)
+        )
+        folder_parser: argparse.ArgumentParser = pack_choices["folder"]
+        max_ratio_action: argparse.Action = next(
+            action for action in folder_parser._actions if getattr(action, "dest", "") == "max_compressed_ratio"
+        )
+        min_size_action: argparse.Action = next(
+            action for action in folder_parser._actions if getattr(action, "dest", "") == "min_compress_size"
+        )
+        self.assertIsNone(max_ratio_action.default)
+        self.assertEqual(min_size_action.default, 0)
 
     def test_pack_parser_cpu_count_help_mentions_auto_and_user_normalization(self) -> None:
         """The pack parser should document auto and explicit worker normalization rules."""
@@ -367,6 +407,8 @@ class TestCliOutputFormatting(CliTestCase):
                 threshold_gain=20,
                 cpu_count=0,
                 zlib_level=7,
+                max_compressed_ratio=None,
+                min_compress_size=0,
                 dry_run=True,
                 require_game_files=False,
             )
@@ -490,6 +532,35 @@ class TestCliCreateRun(CliTestCase):
         self.assertEqual(mocked_build.call_args.kwargs["output_path"].name, "custom-name.img")
         self.assertNotIn("adjusting output file extension", stdout_buffer.getvalue())
 
+    def test_create_run_auto_fit_block_size_selects_small_blocks_for_small_files(self) -> None:
+        """The auto-fit block-size mode should pick a smaller block size for small-file trees."""
+        tmp_path: Path = self.make_temp_path()
+        source_path: Path = self.make_valid_source(tmp_path)
+        data_path: Path = source_path / "data"
+        data_path.mkdir()
+        for idx in range(32):
+            (data_path / f"small_{idx:02d}.bin").write_bytes(b"x" * 100)
+        args: SimpleNamespace = self.make_create_args(
+            source_path=source_path,
+            image_path=tmp_path / "out",
+            dry_run=True,
+            verify=False,
+        )
+        args.block_size = "auto-fit"
+        stdout_buffer: StringIO = StringIO()
+
+        with patch.object(
+            cli, "build_pfs", return_value=self.make_build_stats(tmp_path)
+        ) as mocked_build, patch.object(
+            cli,
+            "prompt_overwrite",
+            return_value=True,
+        ), redirect_stdout(stdout_buffer):
+            self.assertEqual(cli.cli_mkpfs_create_run(args), 0)
+
+        self.assertEqual(mocked_build.call_args.kwargs["block_size"], 4096)
+        self.assertIn("Auto-fit block size selected", stdout_buffer.getvalue())
+
     def test_create_run_requires_game_files_when_flag_is_enabled(self) -> None:
         """Pack should fail fast when strict game-file validation is enabled and files are missing."""
         tmp_path: Path = self.make_temp_path()
@@ -562,6 +633,18 @@ class TestCliCreateRun(CliTestCase):
             bad_level: SimpleNamespace = SimpleNamespace(**bad_level_dict)
             with self.assertRaises(BuildError):
                 cli.cli_mkpfs_create_run(bad_level)
+
+            bad_max_ratio_dict: dict[str, object] = base_args.copy()
+            bad_max_ratio_dict["max_compressed_ratio"] = 101
+            bad_max_ratio: SimpleNamespace = SimpleNamespace(**bad_max_ratio_dict)
+            with self.assertRaises(BuildError):
+                cli.cli_mkpfs_create_run(bad_max_ratio)
+
+            bad_min_size_dict: dict[str, object] = base_args.copy()
+            bad_min_size_dict["min_compress_size"] = -1
+            bad_min_size: SimpleNamespace = SimpleNamespace(**bad_min_size_dict)
+            with self.assertRaises(BuildError):
+                cli.cli_mkpfs_create_run(bad_min_size)
 
             bad_key_dict: dict[str, object] = base_args.copy()
             bad_key_dict["encrypted"] = True
