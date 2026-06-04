@@ -1604,22 +1604,20 @@ def _compress_files_in_process(
         )
 
 
-def decode_pfsc_payload(payload: bytes, expected_logical_size: int | None = None) -> bytes:
-    """Decode PFSC block-compressed payload bytes.
+def _parse_pfsc_header(head: bytes) -> tuple[int, int, int, int, int]:
+    """Parse and validate the fixed PFSC header fields.
 
     Args:
-        payload: Stored PFSC payload bytes.
-        expected_logical_size: Optional expected logical size from inode metadata.
+        head: At least ``PFSC_HEADER_SIZE`` bytes from the start of a PFSC payload.
 
     Returns:
-        Decoded logical file payload.
+        Tuple ``(logical_block_size, block_count, block_offsets_offset, data_offset, logical_size)``.
 
     Raises:
-        ValueError: If PFSC payload structure or per-block decoding is invalid.
+        ValueError: If any PFSC header field is invalid.
     """
-    if len(payload) < consts.PFSC_HEADER_SIZE:
+    if len(head) < consts.PFSC_HEADER_SIZE:
         raise ValueError("PFSC payload is too small for header")
-
     magic: int
     unk4: int
     unk8: int
@@ -1637,7 +1635,7 @@ def decode_pfsc_payload(payload: bytes, expected_logical_size: int | None = None
         block_offsets_offset,
         data_offset,
         logical_size,
-    ) = struct.unpack_from("<iiiiqqQq", payload, 0)
+    ) = struct.unpack_from("<iiiiqqQq", head, 0)
 
     if magic != consts.PFSC_MAGIC:
         raise ValueError(f"invalid PFSC magic 0x{magic:08X}")
@@ -1664,10 +1662,57 @@ def decode_pfsc_payload(payload: bytes, expected_logical_size: int | None = None
         )
     if data_offset < consts.PFSC_INITIAL_DATA_OFFSET:
         raise ValueError("PFSC data offset is smaller than the minimum compatible header span")
+
+    block_count: int = logical_size // logical_block_size
+    return logical_block_size, block_count, block_offsets_offset, data_offset, logical_size
+
+
+def _decode_pfsc_block(stored_block: bytes, logical_block_size: int, idx: int) -> bytes:
+    """Decode one stored PFSC block to its logical bytes.
+
+    Args:
+        stored_block: Stored block bytes (compressed when shorter than the logical size).
+        logical_block_size: Expected logical block size.
+        idx: Block index, used for error messages.
+
+    Returns:
+        Logical block bytes of length ``logical_block_size``.
+
+    Raises:
+        ValueError: If the block fails to decompress or has an unexpected size.
+    """
+    if len(stored_block) == logical_block_size:
+        return stored_block
+    if len(stored_block) < logical_block_size:
+        try:
+            logical_block: bytes = zlib.decompress(stored_block)
+        except zlib.error as exc:
+            raise ValueError(f"PFSC block {idx} failed to decompress: {exc}") from exc
+        if len(logical_block) != logical_block_size:
+            raise ValueError(
+                f"PFSC block {idx} decompressed to {len(logical_block)} bytes, expected {logical_block_size}"
+            )
+        return logical_block
+    raise ValueError(f"PFSC block {idx} stored size {len(stored_block)} exceeds logical size {logical_block_size}")
+
+
+def decode_pfsc_payload(payload: bytes, expected_logical_size: int | None = None) -> bytes:
+    """Decode PFSC block-compressed payload bytes.
+
+    Args:
+        payload: Stored PFSC payload bytes.
+        expected_logical_size: Optional expected logical size from inode metadata.
+
+    Returns:
+        Decoded logical file payload.
+
+    Raises:
+        ValueError: If PFSC payload structure or per-block decoding is invalid.
+    """
+    logical_block_size, block_count, block_offsets_offset, data_offset, logical_size = _parse_pfsc_header(payload)
     if data_offset > len(payload):
         raise ValueError("PFSC data offset exceeds payload length")
 
-    block_count: int = logical_size // logical_block_size
     offsets_size: int = (block_count + 1) * consts.PFSC_OFFSET_ENTRY_SIZE
     offsets_end: int = block_offsets_offset + offsets_size
     if offsets_end > data_offset or offsets_end > len(payload):
@@ -1683,29 +1728,9 @@ def decode_pfsc_payload(payload: bytes, expected_logical_size: int | None = None
             raise ValueError("PFSC block offsets are not monotonic")
 
     logical_out: bytearray = bytearray()
-
     for idx in range(block_count):
-        start: int = offsets[idx]
-        end: int = offsets[idx + 1]
-        stored_block: bytes = payload[start:end]
-        block_expected_size: int = logical_block_size
-
-        if len(stored_block) == block_expected_size:
-            logical_block: bytes = stored_block
-        elif len(stored_block) < block_expected_size:
-            try:
-                logical_block = zlib.decompress(stored_block)
-            except zlib.error as exc:
-                raise ValueError(f"PFSC block {idx} failed to decompress: {exc}") from exc
-            if len(logical_block) != block_expected_size:
-                raise ValueError(
-                    f"PFSC block {idx} decompressed to {len(logical_block)} bytes, expected {block_expected_size}"
-                )
-        else:
-            raise ValueError(
-                f"PFSC block {idx} stored size {len(stored_block)} exceeds logical size {block_expected_size}"
-            )
-        logical_out.extend(logical_block)
+        stored_block: bytes = payload[offsets[idx] : offsets[idx + 1]]
+        logical_out.extend(_decode_pfsc_block(stored_block, logical_block_size, idx))
 
     logical_payload: bytes = bytes(logical_out)
     if len(logical_payload) != logical_size:
@@ -4043,6 +4068,100 @@ def read_image_inode_payload(
     return data
 
 
+def iter_inode_logical_blocks(
+    fh: BinaryIO,
+    header: ParsedHeader,
+    inode: ParsedInode,
+    ekpfs: bytes | None = None,
+    new_crypt: bool = False,
+    chunk_size: int = 4 * 1024 * 1024,
+) -> Iterator[bytes]:
+    """Yield an inode's logical payload in bounded-memory chunks.
+
+    Streams the decoded payload without ever holding the whole file in memory:
+    for unsigned PFSC payloads it reads and decompresses one logical block at a
+    time; for unsigned raw payloads it copies fixed-size chunks; signed payloads
+    (size-limited by the signed layout) fall back to a single buffered decode.
+
+    Args:
+        fh: Open image file handle.
+        header: Parsed image header.
+        inode: Parsed inode whose payload should be streamed.
+        ekpfs: Optional EKPFS key material. Defaults to the all-zero key.
+        new_crypt: When True, use the alternate newCrypt key derivation path.
+        chunk_size: Read chunk size for raw (uncompressed) payloads.
+
+    Yields:
+        Logical payload byte chunks in order; concatenation equals the decoded file.
+
+    Raises:
+        ValueError: If the stored payload structure is invalid.
+    """
+    if inode.blocks <= 0 or inode.logical_size <= 0:
+        return
+
+    # Signed payloads are bounded by the signed-layout size limit; decode buffered.
+    if inode.db_sig or inode.ib_sig:
+        payload: bytes = read_image_inode_payload(fh, header, inode, ekpfs=ekpfs, new_crypt=new_crypt)
+        yield decode_inode_payload(payload=payload, inode=inode)
+        return
+
+    base: int = inode.db[0] * header.block_size
+    expected: int = inode.logical_size
+
+    # Raw (uncompressed) contiguous payload: stored bytes equal logical bytes.
+    if not inode.is_compressed:
+        remaining: int = expected
+        offset: int = base
+        while remaining > 0:
+            take: int = min(chunk_size, remaining)
+            yield read_image_bytes(fh, header, offset, take, ekpfs=ekpfs, new_crypt=new_crypt)
+            offset += take
+            remaining -= take
+        return
+
+    # Compressed PFSC payload stored contiguously from ``base``.
+    stored_size: int = inode.stored_size
+    head: bytes = read_image_bytes(fh, header, base, consts.PFSC_HEADER_SIZE, ekpfs=ekpfs, new_crypt=new_crypt)
+    logical_block_size, block_count, block_offsets_offset, data_offset, pfsc_logical_size = _parse_pfsc_header(head)
+    if data_offset > stored_size:
+        raise ValueError("PFSC data offset exceeds stored payload length")
+    offsets_size: int = (block_count + 1) * consts.PFSC_OFFSET_ENTRY_SIZE
+    if block_offsets_offset + offsets_size > data_offset or block_offsets_offset + offsets_size > stored_size:
+        raise ValueError("PFSC payload is truncated before block offset table")
+
+    offset_table: bytes = read_image_bytes(
+        fh, header, base + block_offsets_offset, offsets_size, ekpfs=ekpfs, new_crypt=new_crypt
+    )
+    offsets: list[int] = list(struct.unpack_from(f"<{block_count + 1}Q", offset_table, 0))
+    if offsets[0] != data_offset:
+        raise ValueError("PFSC block offsets must start at data_start")
+    if offsets[-1] > stored_size:
+        raise ValueError("PFSC block offsets exceed payload size")
+    for idx in range(1, len(offsets)):
+        if offsets[idx] < offsets[idx - 1]:
+            raise ValueError("PFSC block offsets are not monotonic")
+    if expected > pfsc_logical_size:
+        raise ValueError(f"PFSC logical size {pfsc_logical_size} is smaller than inode size {expected}")
+
+    # Read, decompress, and emit one logical block at a time, trimming to the file size.
+    emitted: int = 0
+    for idx in range(block_count):
+        if emitted >= expected:
+            break
+        stored_block: bytes = read_image_bytes(
+            fh, header, base + offsets[idx], offsets[idx + 1] - offsets[idx], ekpfs=ekpfs, new_crypt=new_crypt
+        )
+        logical_block: bytes = _decode_pfsc_block(stored_block, logical_block_size, idx)
+        if emitted + len(logical_block) > expected:
+            logical_block = logical_block[: expected - emitted]
+        emitted += len(logical_block)
+        yield logical_block
+
+    if emitted != expected:
+        raise ValueError(f"PFSC streamed output size {emitted} does not match inode size {expected}")
+
+
 def parse_superroot_and_indexes(
     fh: BinaryIO,
     header: ParsedHeader,
@@ -4243,25 +4362,24 @@ def verify_file_payload_hashes(
     for rel in sorted(file_inodes.keys()):
         inode_num = file_inodes[rel]
         inode = inodes[inode_num]
+        # Stream the logical payload one block at a time to keep memory flat.
+        file_hash = hashlib.sha256()
+        file_len = 0
         try:
-            payload = read_image_inode_payload(fh, header, inode, ekpfs=ekpfs, new_crypt=new_crypt)
-        except Exception as exc:
+            for chunk in iter_inode_logical_blocks(fh, header, inode, ekpfs=ekpfs, new_crypt=new_crypt):
+                file_hash.update(chunk)
+                cumulative_crc = zlib.crc32(chunk, cumulative_crc) & 0xFFFFFFFF
+                file_len += len(chunk)
+        except (ValueError, OSError) as exc:
             errors.append(f"failed to read file payload '{rel}' (inode {inode_num}): {exc}")
             continue
 
-        try:
-            logical_data = decode_inode_payload(payload=payload, inode=inode)
-        except ValueError as exc:
-            errors.append(f"file '{rel}' payload decode failed: {exc}")
-            continue
-        if inode.logical_size >= 0 and len(logical_data) != inode.logical_size:
-            errors.append(f"file '{rel}' size {len(logical_data)} does not match inode size {inode.logical_size}")
+        if inode.logical_size >= 0 and file_len != inode.logical_size:
+            errors.append(f"file '{rel}' size {file_len} does not match inode size {inode.logical_size}")
 
-        file_hash = hashlib.sha256(logical_data).digest()
         manifest.update(rel.encode("utf-8", errors="replace"))
         manifest.update(b"\0")
-        manifest.update(file_hash)
-        cumulative_crc = zlib.crc32(logical_data, cumulative_crc) & 0xFFFFFFFF
+        manifest.update(file_hash.digest())
         checked += 1
 
     return checked, cumulative_crc, manifest.hexdigest()
@@ -4436,16 +4554,24 @@ def validate_source_match(
 
     for rel in sorted(source_rel & image_rel):
         inode = inodes[file_inodes[rel]]
-        payload = read_image_inode_payload(fh, header, inode, ekpfs=ekpfs, new_crypt=new_crypt)
-        if inode.is_compressed:
-            try:
-                payload = decode_inode_payload(payload=payload, inode=inode)
-            except ValueError as exc:
-                errors.append(f"file '{rel}' marked compressed but failed to decode payload: {exc}")
-                continue
+        # Hash the decoded image payload and the source file by streaming both.
+        image_hash = hashlib.sha256()
+        try:
+            for chunk in iter_inode_logical_blocks(fh, header, inode, ekpfs=ekpfs, new_crypt=new_crypt):
+                image_hash.update(chunk)
+        except (ValueError, OSError) as exc:
+            errors.append(f"file '{rel}' marked compressed but failed to decode payload: {exc}")
+            continue
 
-        src_data = (source / rel).read_bytes()
-        if hashlib.sha256(src_data).digest() != hashlib.sha256(payload).digest():
+        source_hash = hashlib.sha256()
+        with (source / rel).open("rb") as src_fh:
+            while True:
+                src_chunk: bytes = src_fh.read(4 * 1024 * 1024)
+                if not src_chunk:
+                    break
+                source_hash.update(src_chunk)
+
+        if image_hash.digest() != source_hash.digest():
             errors.append(f"content mismatch for file: {rel}")
 
 
@@ -4867,18 +4993,20 @@ def extract_pfs_image(
             total_files: int = len(file_targets)
             for index, (rel_path, file_target, inode_num) in enumerate(file_targets, start=1):
                 inode: ParsedInode = inspection.inodes[inode_num]
-                payload = read_image_inode_payload(fh, inspection.header, inode, ekpfs=ekpfs, new_crypt=new_crypt)
-                if inode.is_compressed:
-                    try:
-                        payload = decode_inode_payload(payload=payload, inode=inode)
-                    except ValueError as exc:
-                        result.errors.append(f"failed to decode file '{rel_path}' payload: {exc}")
-                        return result
-
                 file_target.parent.mkdir(parents=True, exist_ok=True)
-                file_target.write_bytes(payload)
+                # Stream logical blocks straight to disk to keep memory flat for large files.
+                try:
+                    with file_target.open("wb") as out_fh:
+                        for chunk in iter_inode_logical_blocks(
+                            fh, inspection.header, inode, ekpfs=ekpfs, new_crypt=new_crypt
+                        ):
+                            out_fh.write(chunk)
+                            result.bytes_written += len(chunk)
+                except ValueError as exc:
+                    result.errors.append(f"failed to decode file '{rel_path}' payload: {exc}")
+                    return result
+
                 result.files_written += 1
-                result.bytes_written += len(payload)
 
                 if progress is not None:
                     progress.step("extract", index, total_files, bytes_processed=result.bytes_written)

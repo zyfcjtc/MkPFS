@@ -2391,3 +2391,136 @@ class TestStreamSingleFileBuilder(PfsTestCase):
         result = extract_pfs_image(image=out, output_path=dest, ekpfs=key)
         assert not result.errors
         assert (dest / "enc.exfat").read_bytes() == src.read_bytes()
+
+
+class TestStreamingDecode(PfsTestCase):
+    """Tests for flat-memory block-streaming decode of inode payloads."""
+
+    def _build_single(
+        self, tmp_path: Path, payload: bytes, *, encrypted: bool = False, key: bytes | None = None
+    ) -> Path:
+        """Build a single-file image and return its path."""
+        src: Path = tmp_path / "blob.exfat"
+        src.write_bytes(payload)
+        out: Path = tmp_path / "blob.ffpfsc"
+        pfs_mod.build_pfs_stream_single_file(
+            source_file=src,
+            output_path=out,
+            block_size=65536,
+            pfs_version=c.PFS_VERSION_PS5,
+            case_insensitive=True,
+            zlib_level=9,
+            threshold_gain=0,
+            min_file_gain=0,
+            min_compress_size=0,
+            cpu_count=1,
+            compress=True,
+            encrypted=encrypted,
+            ekpfs=key,
+        )
+        return out
+
+    def test_iter_blocks_matches_buffered_decode_compressed(self) -> None:
+        """Streaming a compressed multi-block payload equals the buffered decode and the source."""
+        tmp_path: Path = self.make_temp_path()
+        payload: bytes = (bytes(range(256)) * 4000) + b"\x00" * 200_000
+        out: Path = self._build_single(tmp_path, payload)
+        with out.open("rb") as fh:
+            header = pfs_mod.parse_image_header(fh)
+            inodes = pfs_mod.parse_image_inodes(fh, header)
+            file_inode = inodes[3]
+            self.assertTrue(file_inode.is_file)
+            self.assertTrue(file_inode.is_compressed)
+            buffered = pfs_mod.decode_inode_payload(
+                payload=pfs_mod.read_image_inode_payload(fh, header, file_inode), inode=file_inode
+            )
+            streamed = b"".join(pfs_mod.iter_inode_logical_blocks(fh, header, file_inode))
+        self.assertEqual(streamed, buffered)
+        self.assertEqual(streamed, payload)
+
+    def test_iter_blocks_matches_source_raw(self) -> None:
+        """Streaming an incompressible (raw) payload equals the source bytes."""
+        import os
+
+        tmp_path: Path = self.make_temp_path()
+        payload: bytes = os.urandom(200_000)
+        out: Path = self._build_single(tmp_path, payload)
+        with out.open("rb") as fh:
+            header = pfs_mod.parse_image_header(fh)
+            inodes = pfs_mod.parse_image_inodes(fh, header)
+            file_inode = inodes[3]
+            self.assertFalse(file_inode.is_compressed)
+            streamed = b"".join(pfs_mod.iter_inode_logical_blocks(fh, header, file_inode))
+        self.assertEqual(streamed, payload)
+
+    def test_iter_blocks_encrypted(self) -> None:
+        """Streaming decode works on an encrypted image with the EKPFS key."""
+        tmp_path: Path = self.make_temp_path()
+        key: bytes = b"\x22" * 32
+        payload: bytes = (b"ENCDATA!" * 6000) + b"\x00" * 90_000
+        out: Path = self._build_single(tmp_path, payload, encrypted=True, key=key)
+        with out.open("rb") as fh:
+            header = pfs_mod.parse_image_header(fh)
+            inodes = pfs_mod.parse_image_inodes(fh, header, ekpfs=key)
+            file_inode = inodes[3]
+            streamed = b"".join(pfs_mod.iter_inode_logical_blocks(fh, header, file_inode, ekpfs=key))
+        self.assertEqual(streamed, payload)
+
+
+class _RecordingProgress:
+    """Minimal Progress stand-in that records step() calls for assertions."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int, int]] = []
+
+    def step(self, phase: str, done: int, total: int, bytes_processed: int = 0) -> None:
+        self.calls.append((phase, done, total))
+
+    def status(self, message: str) -> None:
+        pass
+
+
+class TestVerifyProgress(PfsTestCase):
+    """Tests that the verify stage reports progress when a Progress sink is supplied."""
+
+    def _build_single(self, tmp_path: Path, payload: bytes) -> Path:
+        src: Path = tmp_path / "blob.exfat"
+        src.write_bytes(payload)
+        out: Path = tmp_path / "blob.ffpfsc"
+        pfs_mod.build_pfs_stream_single_file(
+            source_file=src,
+            output_path=out,
+            block_size=65536,
+            pfs_version=c.PFS_VERSION_PS5,
+            case_insensitive=True,
+            zlib_level=9,
+            threshold_gain=0,
+            min_file_gain=0,
+            min_compress_size=0,
+            cpu_count=1,
+            compress=True,
+            encrypted=False,
+        )
+        return out
+
+    def test_verify_file_payload_hashes_reports_progress(self) -> None:
+        """verify_file_payload_hashes drives a 'verify' progress phase to completion."""
+        tmp_path: Path = self.make_temp_path()
+        payload: bytes = (bytes(range(256)) * 4000) + b"\x00" * 200_000
+        out: Path = self._build_single(tmp_path, payload)
+        progress = _RecordingProgress()
+        with out.open("rb") as fh:
+            header = pfs_mod.parse_image_header(fh)
+            inodes = pfs_mod.parse_image_inodes(fh, header)
+            file_inodes = {"blob.exfat": 3}
+            errors: list[str] = []
+            checked, _crc, _manifest = pfs_mod.verify_file_payload_hashes(
+                fh, header, inodes, file_inodes, errors, progress=progress
+            )
+        self.assertEqual(checked, 1)
+        self.assertEqual(errors, [])
+        verify_calls = [ct for ct in progress.calls if ct[0] == "verify"]
+        self.assertTrue(verify_calls)
+        # Final verify update reaches 100% (done == total == logical size).
+        self.assertEqual(verify_calls[-1][1], verify_calls[-1][2])
+        self.assertEqual(verify_calls[-1][2], len(payload))
