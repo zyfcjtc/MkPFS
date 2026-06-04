@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import consts
 from .logging import error, info, warning
+from .pbar import Progress
 from .pfs import (
     BuildError,
     BuildStats,
@@ -371,6 +372,8 @@ def run_image_check(
     warnings: list[str] = []
     tree: dict[int, list[ParsedDirent]] = {}
     uroot_inode = -1
+    # Show verify/compare progress only for interactive report runs.
+    progress: Progress = Progress(enabled=emit_report)
 
     if not image.exists() or not image.is_file():
         return [f"image path does not exist or is not a file: {image}"], [], tree, uroot_inode
@@ -414,6 +417,7 @@ def run_image_check(
                 errors,
                 ekpfs=ekpfs,
                 new_crypt=new_crypt,
+                progress=progress,
             )
 
             if expected_crc32 is not None and data_crc32 != expected_crc32:
@@ -434,7 +438,15 @@ def run_image_check(
 
             if source is not None:
                 validate_source_match(
-                    fh, header, inodes, file_inodes, source, errors, ekpfs=ekpfs, new_crypt=new_crypt
+                    fh,
+                    header,
+                    inodes,
+                    file_inodes,
+                    source,
+                    errors,
+                    ekpfs=ekpfs,
+                    new_crypt=new_crypt,
+                    progress=progress,
                 )
 
             compressed_count = sum(1 for i in file_inodes.values() if inodes[i].is_compressed)

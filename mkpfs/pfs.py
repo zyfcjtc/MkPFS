@@ -4355,10 +4355,21 @@ def verify_file_payload_hashes(
     errors: list[str],
     ekpfs: bytes | None = None,
     new_crypt: bool = False,
+    progress: Progress | None = None,
 ) -> tuple[int, int, str]:
     manifest = hashlib.sha256()
     cumulative_crc = 0
     checked = 0
+
+    # Report progress against the total logical bytes to hash, throttled by volume.
+    total_bytes: int = sum(max(0, inodes[n].logical_size) for n in file_inodes.values())
+    progress_total: int = max(total_bytes, 1)
+    processed: int = 0
+    last_reported: int = 0
+    update_interval: int = 8 * 1024 * 1024
+    if progress is not None:
+        progress.step("verify", 0, progress_total, bytes_processed=0)
+
     for rel in sorted(file_inodes.keys()):
         inode_num = file_inodes[rel]
         inode = inodes[inode_num]
@@ -4370,6 +4381,10 @@ def verify_file_payload_hashes(
                 file_hash.update(chunk)
                 cumulative_crc = zlib.crc32(chunk, cumulative_crc) & 0xFFFFFFFF
                 file_len += len(chunk)
+                processed += len(chunk)
+                if progress is not None and processed - last_reported >= update_interval:
+                    last_reported = processed
+                    progress.step("verify", min(processed, total_bytes), progress_total, bytes_processed=processed)
         except (ValueError, OSError) as exc:
             errors.append(f"failed to read file payload '{rel}' (inode {inode_num}): {exc}")
             continue
@@ -4381,6 +4396,9 @@ def verify_file_payload_hashes(
         manifest.update(b"\0")
         manifest.update(file_hash.digest())
         checked += 1
+
+    if progress is not None:
+        progress.step("verify", progress_total, progress_total, bytes_processed=total_bytes)
 
     return checked, cumulative_crc, manifest.hexdigest()
 
@@ -4538,6 +4556,7 @@ def validate_source_match(
     errors: list[str],
     ekpfs: bytes | None = None,
     new_crypt: bool = False,
+    progress: Progress | None = None,
 ) -> None:
     if not source.exists() or not source.is_dir():
         errors.append(f"source path does not exist or is not a directory: {source}")
@@ -4552,13 +4571,27 @@ def validate_source_match(
     for rel in sorted(image_rel - source_rel):
         errors.append(f"extra in image: {rel}")
 
-    for rel in sorted(source_rel & image_rel):
+    common = sorted(source_rel & image_rel)
+    # Report progress against the total logical bytes to compare, throttled by volume.
+    total_bytes: int = sum(max(0, inodes[file_inodes[rel]].logical_size) for rel in common)
+    progress_total: int = max(total_bytes, 1)
+    processed: int = 0
+    last_reported: int = 0
+    update_interval: int = 8 * 1024 * 1024
+    if progress is not None:
+        progress.step("compare", 0, progress_total, bytes_processed=0)
+
+    for rel in common:
         inode = inodes[file_inodes[rel]]
         # Hash the decoded image payload and the source file by streaming both.
         image_hash = hashlib.sha256()
         try:
             for chunk in iter_inode_logical_blocks(fh, header, inode, ekpfs=ekpfs, new_crypt=new_crypt):
                 image_hash.update(chunk)
+                processed += len(chunk)
+                if progress is not None and processed - last_reported >= update_interval:
+                    last_reported = processed
+                    progress.step("compare", min(processed, total_bytes), progress_total, bytes_processed=processed)
         except (ValueError, OSError) as exc:
             errors.append(f"file '{rel}' marked compressed but failed to decode payload: {exc}")
             continue
@@ -4573,6 +4606,9 @@ def validate_source_match(
 
         if image_hash.digest() != source_hash.digest():
             errors.append(f"content mismatch for file: {rel}")
+
+    if progress is not None:
+        progress.step("compare", progress_total, progress_total, bytes_processed=total_bytes)
 
 
 @dataclass
