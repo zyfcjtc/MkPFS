@@ -232,7 +232,7 @@ class TestCliArgumentHelpers(CliTestCase):
         compression_action = next(
             action for action in folder_parser._actions if getattr(action, "dest", "") == "compression_level"
         )
-        self.assertEqual(compression_action.default, 9)
+        self.assertEqual(compression_action.default, 7)
 
     def test_pack_parser_uses_zero_as_default_threshold_gain(self) -> None:
         """The pack parser should expose 0 as the default threshold gain."""

@@ -175,17 +175,6 @@ mkpfs pack folder ./input ./game.ffpfs --require-game-files --verify
 mkpfs pack folder ./input ./game.ffpfs --temp-folder ./tmp/mkpfs
 ```
 
-PowerShell example with tuned PFSC compression:
-
-```powershell
-python -m mkpfs pack folder c:\game_folder d:\game.ffpfs `
-  --compress `
-  --skip-executable-compression `
-  --compression-level 9 `
-  --max-compressed-ratio 95 `
-  --min-compress-size 65536
-```
-
 | Parameter | Description |
 | --- | --- |
 | `source_dir` | Source app or homebrew folder to pack. |
@@ -202,7 +191,7 @@ python -m mkpfs pack folder c:\game_folder d:\game.ffpfs `
 | `--case-sensitive` | Build a case-sensitive image. |
 | `--case-insensitive` | Set the case-insensitive mode bit. This is the default behavior. |
 | `--cpu-count CPU_COUNT` | Number of CPU cores to use for PFSC compression. `0` means auto `max(1, cpu_count())`, non-zero uses `max(1, user value)`. |
-| `--compression-level COMPRESSION_LEVEL` | Zlib compression level from `0` to `9`. Default: `9`. |
+| `--compression-level COMPRESSION_LEVEL` | Zlib compression level from `0` to `9`. Default: `7`. |
 | `--max-compressed-ratio MAX_COMPRESSED_RATIO` | Maximum PFSC size as percent of the raw file size. Use `95` to store files raw unless PFSC is 95% of raw size or smaller. Default: disabled. |
 | `--min-compress-size MIN_COMPRESS_SIZE` | Store files smaller than this many bytes raw without trying PFSC compression. Use `65536` to skip files smaller than one PFSC logical block. Default: `0`. |
 | `--skip-executable-compression` | Store `eboot*.bin`, `*.prx`, and `*.sprx` files raw even when PFSC compression is enabled. Default: enabled. |
@@ -260,7 +249,7 @@ mkpfs pack file ./payload.exfat ./payload.ffpfsc --temp-folder ./tmp/mkpfs
 | `--case-sensitive` | Build a case-sensitive image. |
 | `--case-insensitive` | Set the case-insensitive mode bit. This is the default behavior. |
 | `--cpu-count CPU_COUNT` | Number of CPU cores to use for PFSC compression. `0` means auto `max(1, cpu_count())`, non-zero uses `max(1, user value)`. |
-| `--compression-level COMPRESSION_LEVEL` | Zlib compression level from `0` to `9`. Default: `9`. |
+| `--compression-level COMPRESSION_LEVEL` | Zlib compression level from `0` to `9`. Default: `7`. |
 | `--max-compressed-ratio MAX_COMPRESSED_RATIO` | Maximum PFSC size as percent of the raw file size. Use `95` to store files raw unless PFSC is 95% of raw size or smaller. Default: disabled. |
 | `--min-compress-size MIN_COMPRESS_SIZE` | Store files smaller than this many bytes raw without trying PFSC compression. Use `65536` to skip files smaller than one PFSC logical block. Default: `0`. |
 | `--skip-executable-compression` | Store `eboot*.bin`, `*.prx`, and `*.sprx` files raw even when PFSC compression is enabled. Default: enabled. |
@@ -277,6 +266,8 @@ Notes:
 - Single-file packing stages the file in a temporary one-file tree using links, so the source payload is not duplicated on disk.
 - Use `--temp-folder` when you want staged files and PFSC spool files to live somewhere other than the system temp directory.
 - The default adjusted extension for single-file output is `.ffpfsc`.
+- If `pack file` fails on macOS with `OSError: [Errno 22] Invalid argument` during PFSC compression, rerun with `--cpu-count 1` to keep block compression in-process.
+  If the source lives on a removable or network volume, also try a local `--temp-folder` on a writable APFS volume.
 
 ### `verify`
 
@@ -368,18 +359,6 @@ mkpfs unpack ./game.ffpfs ./extracted/ --overwrite
 | `--ekpfs-key EKPFS_KEY` | Optional 64-hex EKPFS key for encrypted images. |
 | `--new-crypt` | Use the alternate `newCrypt` EKPFS derivation. |
 
-## 🔁 Typical Workflow
-
-```bash
-# 1. Pack an image from a source tree
-mkpfs pack folder ./input ./output.ffpfs
-
-# 2. Verify the generated image
-mkpfs verify ./output.ffpfs
-
-# 3. Inspect the final tree layout
-mkpfs tree ./output.ffpfs
-```
 
 ## 💻 Example Output
 

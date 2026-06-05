@@ -1817,7 +1817,7 @@ def compute_file_storage(
     min_file_gain: int = 0,
     min_compress_size: int = 0,
     block_size: int = consts.PFSC_LOGICAL_BLOCK_SIZE,
-    zlib_level: int = zlib.Z_BEST_COMPRESSION,
+    zlib_level: int = 7,
 ) -> None:
     """Decide how a file will be stored in the image.
 

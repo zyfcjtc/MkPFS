@@ -77,12 +77,31 @@ class MkPFSArgumentParser(argparse.ArgumentParser):
     """Argument parser that prepends the MkPFS version to help output."""
 
     def format_help(self) -> str:
-        """Return help text prefixed with the MkPFS version banner.
+        """Return help text with a concise title and cleaned usage block.
 
-        Returns:
-            Complete help text with a version banner at the top.
+        We render a short title line that includes the package version and
+        project URL, followed by a labelled "Usage:" block (without the
+        leading argparse "usage:" token), and then the remainder of the
+        automatically-generated help text. This keeps the top-level and
+        subcommand help consistent and easier to scan.
         """
-        return f"{'=' * 70}\n{get_output_title()}\n{'=' * 70}\n\n{super().format_help()}"
+        # Build a clean usage line (drop the leading "usage:" label).
+        raw_usage: str = self.format_usage().strip()
+        usage_line: str = raw_usage
+        if usage_line.lower().startswith("usage:"):
+            usage_line = usage_line[len("usage:") :].strip()
+
+        # Grab the full help and drop the first usage line to avoid
+        # duplicating it when we render our custom header above.
+        full_help: str = super().format_help()
+        help_lines: list[str] = full_help.splitlines()
+        if help_lines and help_lines[0].lower().startswith("usage:"):
+            remainder: str = "\n".join(help_lines[1:]).lstrip("\n")
+        else:
+            remainder = full_help
+
+        header: str = f"{get_output_title()}\n\nUsage:\n   {usage_line}\n\n"
+        return header + remainder
 
 
 def print_version_header() -> None:
@@ -604,7 +623,12 @@ def cli_mkpfs_add_create_args(
         default=0,
         help="Number of CPU cores for PFSC compression (0 = auto max(1, cpu_count()), non-zero = max(1, user value))",
     )
-    parser.add_argument("--compression-level", type=int, default=9, help="Zlib compression level (0-9, default: 9)")
+    parser.add_argument(
+        "--compression-level",
+        type=int,
+        default=7,
+        help="Zlib compression level (0-9, default: 7)",
+    )
     parser.add_argument(
         "--max-compressed-ratio",
         type=int,
@@ -1205,10 +1229,20 @@ def cli_mkpfs_main_parsers() -> argparse.ArgumentParser:
         prog="mkpfs",
         description="CLI for pack folder/file, verify, inspect, tree, and unpack PFS operations",
     )
+    # Provide a short examples epilog so our custom help renderer can include
+    # practical usage examples after the generated help text.
+    parser.epilog = (
+        "Examples:\n"
+        "   mkpfs pack file './BREW1234.exfat' './BREW1234.exfat.ffpfsc'\n"
+        "   mkpfs unpack './BREW1234.ffpfs' './BREW1234-extracted/'\n"
+    )
     parser.add_argument("-V", action="version", version=get_help_title(), help="Show version and exit")
     sub = parser.add_subparsers(dest="command", required=True, parser_class=MkPFSArgumentParser)
 
     pack_parser = sub.add_parser("pack", help="Pack a folder or file into an image")
+    pack_parser.epilog = (
+        "Examples:\n   mkpfs pack folder ./input ./game.ffpfs\n   mkpfs pack file ./payload.exfat ./payload.ffpfsc\n"
+    )
     pack_sub = pack_parser.add_subparsers(dest="pack_command", required=True, parser_class=MkPFSArgumentParser)
 
     folder_parser = pack_sub.add_parser("folder", help="Build image from a source directory")
@@ -1216,6 +1250,7 @@ def cli_mkpfs_main_parsers() -> argparse.ArgumentParser:
     folder_parser.set_defaults(func=cli_mkpfs_create_run)
 
     file_parser = pack_sub.add_parser("file", help="Build image from a single source file")
+    file_parser.epilog = "Examples:\n   mkpfs pack file './BREW1234.exfat' './BREW1234.exfat.ffpfsc'\n"
     cli_mkpfs_add_create_args(
         file_parser,
         source_arg_name="source_file",
@@ -1271,6 +1306,7 @@ def cli_mkpfs_main_parsers() -> argparse.ArgumentParser:
     ls_parser.set_defaults(func=cli_mkpfs_ls_run)
 
     extract_parser = sub.add_parser("unpack", help="Extract files from image to destination directory")
+    extract_parser.epilog = "Examples:\n   mkpfs unpack './BREW1234.ffpfs' './BREW1234-extracted/'\n"
     extract_parser.add_argument("image_file", help="Path to input .ffpfs image")
     extract_parser.add_argument("output_dir", help="Destination directory for extraction")
     extract_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output path")
@@ -1320,14 +1356,24 @@ def cli_mkpfs_main(argv: list[str] | None = None) -> int:
         Integer process exit code.
     """
     # Intercept -V before argparse processes subcommand requirements.
-    # Argparse's required=True subparsers cause a parse error before version
-    # actions run, so we handle them early here.
+    # Argparse's required=True subparsers can cause a parse error before
+    # version actions run, so we handle -V early here.
     effective_argv: list[str] = list(sys.argv[1:] if argv is None else argv)
     if effective_argv and effective_argv[0] in ("-V"):
         print(f"MkPFS {__version__}")
         return 0
 
+    # Build the parser and handle the empty-argv case so callers that run
+    # the CLI with no arguments see the MkPFS title before the usage text.
     parser: argparse.ArgumentParser = cli_mkpfs_main_parsers()
+    if not effective_argv:
+        # Print a concise title and the usage line, then exit successfully.
+        # Use the help-title (without the project URL) to match the expected
+        # short banner shown by users running the command with no args.
+        print(get_help_title())
+        parser.print_usage()
+        return 0
+
     normalized_argv: list[str] | None = normalize_cli_argv_for_pack_compat(argv)
     args = parser.parse_args(normalized_argv)
     return int(args.func(args))
