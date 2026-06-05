@@ -49,37 +49,46 @@ template: |
 
   **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...$RESOLVED_VERSION
 
+version-resolver:
+  major:
+    labels:
+      - 'type: breaking'
+  minor:
+    labels:
+      - 'type: feature'
+  patch:
+    labels:
+      - 'type: bug'
+      - 'type: maintenance'
+      - 'type: docs'
+      - 'type: dependencies'
+      - 'type: security'
+  default: patch
+
+exclude-labels:
+  - 'skip-changelog'
+
 categories:
   - title: 'Breaking'
-    semver-increment: 'major'
-    when:
-      label: 'type: breaking'
+    labels:
+      - 'type: breaking'
   - title: 'New'
-    semver-increment: 'minor'
-    when:
-      label: 'type: feature'
+    labels:
+      - 'type: feature'
   - title: 'Bug Fixes'
-    semver-increment: 'patch'
-    when:
-      label: 'type: bug'
+    labels:
+      - 'type: bug'
   - title: 'Maintenance'
-    semver-increment: 'patch'
-    when:
-      label: 'type: maintenance'
+    labels:
+      - 'type: maintenance'
   - title: 'Documentation'
-    semver-increment: 'patch'
-    when:
-      label: 'type: docs'
-  - title: 'Other changes'
+    labels:
+      - 'type: docs'
   - title: 'Dependency Updates'
-    semver-increment: 'patch'
-    when:
-      label: 'type: dependencies'
+    labels:
+      - 'type: dependencies'
     collapse-after: 5
-  - type: 'version-resolver'
-    semver-increment: 'patch'
-    when:
-      label: 'type: security'
-  - type: 'pre-exclude'
-    when:
-      label: 'skip-changelog'
+  - title: 'Security'
+    labels:
+      - 'type: security'
+  - title: 'Other changes'
