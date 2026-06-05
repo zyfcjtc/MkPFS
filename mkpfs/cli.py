@@ -1202,7 +1202,7 @@ def cli_mkpfs_main_parsers() -> argparse.ArgumentParser:
     check_parser.add_argument(
         "--require-game-files",
         action="store_true",
-        help="Warn when expected game files such as sce_sys/param.json and eboot.bin are missing",
+        help="Enable the PS5 game-file checklist (warn on missing files; validate sce_sys/param.json when present)",
     )
     check_parser.set_defaults(func=cli_mkpfs_check_run)
 
