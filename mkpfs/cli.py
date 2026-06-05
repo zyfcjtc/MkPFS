@@ -363,6 +363,7 @@ def run_image_check(
     expected_crc32: int | None = None,
     expected_manifest_sha256: str | None = None,
     emit_report: bool = True,
+    require_game_files: bool = False,
     ekpfs: bytes | None = None,
     new_crypt: bool = False,
 ) -> tuple[list[str], list[str], dict[int, list[ParsedDirent]], int]:
@@ -403,7 +404,17 @@ def run_image_check(
             case_insensitive = bool(header.mode & consts.PFS_MODE_CASE_INSENSITIVE)
             expected_fpt = build_expected_fpt(file_inodes, dir_inodes, case_insensitive)
             validate_fpt_maps(fpt_map, collision_map, expected_fpt, errors)
-            validate_ps5_checklist(fh, header, inodes, file_inodes, warnings, errors, ekpfs=ekpfs, new_crypt=new_crypt)
+            if require_game_files:
+                validate_ps5_checklist(
+                    fh,
+                    header,
+                    inodes,
+                    file_inodes,
+                    warnings,
+                    errors,
+                    ekpfs=ekpfs,
+                    new_crypt=new_crypt,
+                )
 
             checked_files, data_crc32, manifest_sha256 = verify_file_payload_hashes(
                 fh,
@@ -762,6 +773,7 @@ def _run_pack_build(
         output_path,
         compare_source_root,
         print_tree=False,
+        require_game_files=require_game_files,
         ekpfs=ekpfs_key,
         new_crypt=new_crypt,
     )
@@ -779,6 +791,8 @@ def _stage_single_file_source_root(*, source_file: Path, temp_folder: Path | Non
 
     The staged file is created as a hard link when possible, with a symlink
     fallback when hard linking is unavailable in the current environment.
+    When neither link type is supported, a regular copy is used as a last
+    resort.
 
     On Windows, hard links cannot cross drives (WinError 17) and symlinks
     require the "Create Symbolic Links" privilege (WinError 1314), which
@@ -797,7 +811,7 @@ def _stage_single_file_source_root(*, source_file: Path, temp_folder: Path | Non
         same file name as ``source_file``.
 
     Raises:
-        BuildError: If no link strategy can stage the file.
+        BuildError: If hard link, symlink, and copy staging all fail.
     """
     # Determine the best location for the staging directory.
     # On Windows, hardlinks cannot cross drives (WinError 17) and symlinks
@@ -819,10 +833,11 @@ def _stage_single_file_source_root(*, source_file: Path, temp_folder: Path | Non
         except OSError:
             try:
                 staging_file.symlink_to(target=source_file)
-            except OSError as exc:
-                raise BuildError(
-                    "Unable to stage source file without copying, hard link and symlink both failed"
-                ) from exc
+            except OSError:
+                try:
+                    shutil.copy2(source_file, staging_file)
+                except OSError as exc:
+                    raise BuildError("Unable to stage source file, hard link, symlink, and copy all failed") from exc
         yield staging_root
 
 
@@ -913,22 +928,27 @@ def cli_mkpfs_check_run(args: argparse.Namespace) -> int:
                 image=image,
                 source=source,
                 args=args,
+                require_game_files=bool(getattr(args, "require_game_files", False)),
             )
 
     return _run_verify_check(
         image=image,
         source=source,
         args=args,
+        require_game_files=bool(getattr(args, "require_game_files", False)),
     )
 
 
-def _run_verify_check(*, image: Path, source: Path | None, args: argparse.Namespace) -> int:
+def _run_verify_check(
+    *, image: Path, source: Path | None, args: argparse.Namespace, require_game_files: bool = False
+) -> int:
     """Run verify checks for a given image and optional source tree.
 
     Args:
         image: Image path to verify.
         source: Optional source directory used for comparison.
         args: Parsed CLI arguments with expected hash options and key settings.
+        require_game_files: Whether to enable the optional game-file checklist warnings.
 
     Returns:
         Process exit code, 0 when verification passes, 1 on verify errors, 2 on
@@ -967,6 +987,7 @@ def _run_verify_check(*, image: Path, source: Path | None, args: argparse.Namesp
         print_tree=False,
         expected_crc32=expected_crc32,
         expected_manifest_sha256=expected_manifest_sha256,
+        require_game_files=require_game_files,
         ekpfs=ekpfs_key,
         new_crypt=new_crypt,
     )
@@ -1178,6 +1199,11 @@ def cli_mkpfs_main_parsers() -> argparse.ArgumentParser:
     )
     check_parser.add_argument("--ekpfs-key", help="Optional 64-hex EKPFS key for encrypted images")
     check_parser.add_argument("--new-crypt", action="store_true", help="Use alternate newCrypt EKPFS derivation")
+    check_parser.add_argument(
+        "--require-game-files",
+        action="store_true",
+        help="Warn when expected game files such as sce_sys/param.json and eboot.bin are missing",
+    )
     check_parser.set_defaults(func=cli_mkpfs_check_run)
 
     inspect_parser = sub.add_parser("inspect", help="Inspect image metadata and integrity summary")
