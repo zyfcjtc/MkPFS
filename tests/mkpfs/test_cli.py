@@ -586,7 +586,7 @@ class TestCliOutputFormatting(CliTestCase):
         self.assertIn("Header magic:      PFS (20130315)", output_text)
         self.assertIn("Compression Setup: PFSC (0x43534650)", output_text)
         self.assertIn("Temp folder:       /tmp/mkpfs", output_text)
-        self.assertIn("CPU cores:         auto (1, max(1, cpu_count() - 1))", output_text)
+        self.assertIn("CPU cores:         1 (auto)", output_text)
         self.assertIn("Zlib level:        7", output_text)
 
     def test_print_summary_reports_build_summary_and_disabled_compression(self) -> None:
