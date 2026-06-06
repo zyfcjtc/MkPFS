@@ -37,6 +37,7 @@ from .pfs import (
     parse_superroot_and_indexes,
     read_pfs_info,
     render_tree,
+    resolve_compression_worker_count,
     validate_fpt_maps,
     validate_inode_layout,
     validate_input,
@@ -187,7 +188,10 @@ def print_build_parameters(
     info(f"  Game-file checks:   {'required' if require_game_files else 'disabled'}")
     if compress:
         info(f"  Threshold gain:    {threshold_gain}%")
-        cpu_label: str = "auto (max(1, cpu_count()))" if cpu_count == 0 else str(max(1, cpu_count))
+        resolved_cpu_count: int = resolve_compression_worker_count(requested_cpu_count=cpu_count)
+        cpu_label: str = (
+            f"auto ({resolved_cpu_count}, max(1, cpu_count() - 1))" if cpu_count == 0 else str(max(1, cpu_count))
+        )
         info(f"  CPU cores:         {cpu_label}")
         info(f"  Zlib level:        {zlib_level}")
         if max_compressed_ratio is not None:
@@ -621,7 +625,10 @@ def cli_mkpfs_add_create_args(
         "--cpu-count",
         type=int,
         default=0,
-        help="Number of CPU cores for PFSC compression (0 = auto max(1, cpu_count()), non-zero = max(1, user value))",
+        help=(
+            "Number of CPU cores for PFSC compression "
+            "(0 = auto max(1, cpu_count() - 1), non-zero = max(1, user value))"
+        ),
     )
     parser.add_argument(
         "--compression-level",

@@ -791,9 +791,9 @@ class TestEncryptedImageRoundTrip(PfsTestCase):
         assert progress_queue.items[-1] <= pfs_mod.PFSC_PROGRESS_REPORT_BYTES
 
     def test_resolve_compression_worker_count_auto_uses_cpu_count(self) -> None:
-        """Auto worker resolution should use ``max(1, cpu_count())``."""
+        """Auto worker resolution should use ``max(1, cpu_count() - 1)``."""
         with patch.object(pfs_mod.mp, "cpu_count", return_value=8):
-            assert pfs_mod.resolve_compression_worker_count(requested_cpu_count=0) == 8
+            assert pfs_mod.resolve_compression_worker_count(requested_cpu_count=0) == 7
 
         with patch.object(pfs_mod.mp, "cpu_count", return_value=1):
             assert pfs_mod.resolve_compression_worker_count(requested_cpu_count=0) == 1

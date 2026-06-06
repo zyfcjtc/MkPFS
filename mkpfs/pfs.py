@@ -1395,7 +1395,7 @@ def resolve_compression_worker_count(*, requested_cpu_count: int) -> int:
 
     Args:
         requested_cpu_count: Requested worker count from CLI, where ``0`` means
-            auto-select with ``max(1, cpu_count())``.
+            auto-select with ``max(1, cpu_count() - 1)``.
 
     Returns:
         Effective worker count, always at least ``1``.
@@ -1408,7 +1408,7 @@ def resolve_compression_worker_count(*, requested_cpu_count: int) -> int:
 
     resolved_count: int
     if requested_cpu_count == 0:
-        resolved_count = max(1, mp.cpu_count())
+        resolved_count = max(1, mp.cpu_count() - 1)
     else:
         resolved_count = requested_cpu_count
 
