@@ -672,7 +672,10 @@ def cli_mkpfs_add_create_args(
         "--min-compress-size",
         type=int,
         default=0,
-        help="Store files smaller than this many bytes raw without trying PFSC compression (default: 0)",
+        help=(
+            "Store files smaller than this many bytes raw without trying PFSC compression "
+            "(default: resolved --block-size value, 65536 for auto, auto-fit result when used)"
+        ),
     )
     parser.add_argument(
         "--skip-executable-compression",
@@ -791,6 +794,8 @@ def _resolve_pack_build_config(args: argparse.Namespace, *, block_size: int) -> 
     if args.min_compress_size < 0:
         raise BuildError("--min-compress-size must be non-negative")
 
+    min_compress_size: int = args.min_compress_size if args.min_compress_size > 0 else block_size
+
     encrypted: bool = bool(getattr(args, "encrypted", False))
     ekpfs_key: bytes = parse_ekpfs_key_hex(getattr(args, "ekpfs_key", None))
     if getattr(args, "ekpfs_key", None) and not encrypted:
@@ -802,7 +807,7 @@ def _resolve_pack_build_config(args: argparse.Namespace, *, block_size: int) -> 
         threshold_gain=args.threshold_gain,
         min_file_gain=100 - int(args.max_compressed_ratio) if args.max_compressed_ratio is not None else 0,
         max_compressed_ratio=args.max_compressed_ratio,
-        min_compress_size=args.min_compress_size,
+        min_compress_size=min_compress_size,
         case_insensitive=args.case_insensitive or not args.case_sensitive,
         pfs_version=consts.PFS_VERSION_PS5 if args.version == "PS5" else consts.PFS_VERSION_PS4,
         encrypted=encrypted,
