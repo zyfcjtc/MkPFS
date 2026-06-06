@@ -56,8 +56,7 @@ python -m mkpfs unpack './BREW1234.ffpfs' './BREW1234-extracted/'
 - With the default `--block-size 65536`, very small files can cause significant block-alignment waste, which may make
   the resulting image larger than the source in corner cases.
     - For small-file-heavy folders, prefer the two-pass strategy (`raw-folder -> .dat -> .ffpfsc`) or try a smaller
-      block
-      size such as `--block-size 16384` or `--block-size 32768`.
+      block size such as `--block-size 16384` or `--block-size 32768`.
 - Antivirus scanning can reduce conversion speed, especially during the write phase or when processing many loose
   files. If you trust this software in your environment and need higher throughput, temporarily disabling real-time
   scanning can help. If you are unsure, keep antivirus enabled and expect slower conversions.
@@ -205,7 +204,7 @@ mkpfs pack folder ./input ./game.ffpfs --temp-folder ./tmp/mkpfs
 | `--cpu-count CPU_COUNT` | Number of CPU cores to use for PFSC compression. `0` means auto `max(1, cpu_count())`, non-zero uses `max(1, user value)`. |
 | `--compression-level COMPRESSION_LEVEL` | Zlib compression level from `0` to `9`. Default: `7`. |
 | `--max-compressed-ratio MAX_COMPRESSED_RATIO` | Maximum PFSC size as percent of the raw file size. Use `95` to store files raw unless PFSC is 95% of raw size or smaller. Default: disabled. |
-| `--min-compress-size MIN_COMPRESS_SIZE` | Store files smaller than this many bytes raw without trying PFSC compression. Use `65536` to skip files smaller than one PFSC logical block. Default: `0`. |
+| `--min-compress-size MIN_COMPRESS_SIZE` | Store files smaller than this many bytes raw without trying PFSC compression. When omitted (or set to `0`), MkPFS uses the resolved `--block-size` value, `65536` for `--block-size auto`, or the selected value for `--block-size auto-fit`. |
 | `--skip-executable-compression` | Store `eboot*.bin`, `*.prx`, and `*.sprx` files raw even when PFSC compression is enabled. Default: enabled. |
 | `--signed` | Build a signed PFS image using a zero EKPFS key and seed. |
 | `--encrypted` | Encrypt filesystem blocks with AES-XTS. |
@@ -264,7 +263,7 @@ mkpfs pack file ./payload.exfat ./payload.ffpfsc --temp-folder ./tmp/mkpfs
 | `--cpu-count CPU_COUNT`                       | Number of CPU cores to use for PFSC compression. `0` means auto `max(1, cpu_count() - 1)`, non-zero uses `max(1, user value)`.                                                                          |
 | `--compression-level COMPRESSION_LEVEL`       | Zlib compression level from `0` to `9`. Default: `7`.                                                                                                                                                   |
 | `--max-compressed-ratio MAX_COMPRESSED_RATIO` | Maximum PFSC size as percent of the raw file size. Use `95` to store files raw unless PFSC is 95% of raw size or smaller. Default: disabled.                                                            |
-| `--min-compress-size MIN_COMPRESS_SIZE`       | Store files smaller than this many bytes raw without trying PFSC compression. Use `65536` to skip files smaller than one PFSC logical block. Default: `0`.                                              |
+| `--min-compress-size MIN_COMPRESS_SIZE`       | Store files smaller than this many bytes raw without trying PFSC compression. When omitted (or set to `0`), MkPFS uses the resolved `--block-size` value, `65536` for `--block-size auto`, or the selected value for `--block-size auto-fit`.                                              |
 | `--no-spool`                                  | Keep preferring direct-to-image streaming for single-file packing. This is already the default when supported; unsupported option combinations transparently fall back to the legacy staged/spool path. |
 | `--skip-executable-compression`               | Store `eboot*.bin`, `*.prx`, and `*.sprx` files raw even when PFSC compression is enabled. Default: enabled.                                                                                            |
 | `--signed`                                    | Build a signed PFS image using a zero EKPFS key and seed.                                                                                                                                               |

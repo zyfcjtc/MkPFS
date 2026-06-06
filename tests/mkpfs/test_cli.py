@@ -694,6 +694,7 @@ class TestCliCreateRun(CliTestCase):
         ), redirect_stdout(stdout_buffer):
             self.assertEqual(cli.cli_mkpfs_create_run(args), 0)
         self.assertEqual(mocked_build.call_args.kwargs["output_path"].suffix, ".ffpfsc")
+        self.assertEqual(mocked_build.call_args.kwargs["min_compress_size"], 65536)
         self.assertEqual(mocked_build.call_args.kwargs["ekpfs"], b"\x00" * 32)
         self.assertFalse(mocked_build.call_args.kwargs["encrypted"])
         self.assertIn("The folder does not seem to contain any direct game information", stdout_buffer.getvalue())
@@ -770,6 +771,7 @@ class TestCliCreateRun(CliTestCase):
             self.assertEqual(cli.cli_mkpfs_create_run(args), 0)
 
         self.assertEqual(mocked_build.call_args.kwargs["block_size"], 4096)
+        self.assertEqual(mocked_build.call_args.kwargs["min_compress_size"], 4096)
         self.assertIn("Auto-fit block size selected", stdout_buffer.getvalue())
 
     def test_create_run_requires_game_files_when_flag_is_enabled(self) -> None:
@@ -1675,6 +1677,37 @@ class TestRunImageCheck(CliTestCase):
 
 class TestCliPackFileNoSpool(CliTestCase):
     """Tests for the spool-free streaming flag on the file pack path."""
+
+    def test_pack_file_stream_auto_block_size_defaults_min_compress_size_to_65536(self) -> None:
+        """Streaming single-file mode should map min_compress_size=0 to the auto block-size value."""
+        tmp_path: Path = self.make_temp_path()
+        src: Path = tmp_path / "payload.bin"
+        src.write_bytes(b"DATA" * 1000)
+        out: Path = tmp_path / "payload.ffpfsc"
+        args: SimpleNamespace = self.make_pack_file_args(source_path=src, image_path=out, dry_run=True, verify=False)
+        args.block_size = "auto"
+        with patch.object(
+            cli,
+            "build_pfs_stream_single_file",
+            return_value=self.make_build_stats(tmp_path),
+        ) as mocked_build:
+            self.assertEqual(cli.cli_mkpfs_pack_file_run(args), 0)
+        self.assertEqual(mocked_build.call_args.kwargs["block_size"], 65536)
+        self.assertEqual(mocked_build.call_args.kwargs["min_compress_size"], 65536)
+
+    def test_pack_file_auto_fit_fallback_defaults_min_compress_size_to_selected_block_size(self) -> None:
+        """Fallback single-file mode should map min_compress_size=0 to the resolved auto-fit block size."""
+        tmp_path: Path = self.make_temp_path()
+        src: Path = tmp_path / "payload.bin"
+        src.write_bytes(b"DATA" * 500)
+        out: Path = tmp_path / "payload.ffpfsc"
+        args: SimpleNamespace = self.make_pack_file_args(source_path=src, image_path=out, dry_run=True, verify=False)
+        args.block_size = "auto-fit"
+        args.no_spool = True
+        with patch.object(cli, "build_pfs", return_value=self.make_build_stats(tmp_path)) as mocked_build:
+            self.assertEqual(cli.cli_mkpfs_pack_file_run(args), 0)
+        resolved_block_size: int = mocked_build.call_args.kwargs["block_size"]
+        self.assertEqual(mocked_build.call_args.kwargs["min_compress_size"], resolved_block_size)
 
     def test_pack_file_no_spool_creates_image_without_spool(self) -> None:
         """`pack file --no-spool` writes the image and leaves no spool in the temp folder."""
